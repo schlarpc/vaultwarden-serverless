@@ -18,9 +18,7 @@
               --set WEB_VAULT_FOLDER "${pkgs.vaultwarden-vault}/share/vaultwarden/vault" \
               --set ENABLE_DB_WAL false \
               --set DISABLE_ICON_DOWNLOAD true \
-              --set ROCKET_ADDRESS 127.0.0.1 \
-              --set RUST_BACKTRACE 1 \
-              --set LOG_LEVEL trace
+              --set ROCKET_ADDRESS 127.0.0.1
           '';
         };
         buildPython = pkgs.python3.withPackages (ps:
