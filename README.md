@@ -2,7 +2,6 @@
 
 * Planned improvements:
   * Handle admin token with SSM / Secrets Manager
-  * WebAuthn 2FA broken (vaultwarden crashes with SIGILL)
   * Cloaking domain name from certificate transparency logs by issuing a wildcard cert
   * Add HSTS header
   * Constrain CloudFormation to make sure domain name and hosted zone ID are defined together
