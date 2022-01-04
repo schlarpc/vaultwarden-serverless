@@ -118,7 +118,8 @@ def create_template():
         Parameter(
             "HostedZoneId",
             Type="String",
-            Default="^(Z[A-Z0-9]+|)$",
+            Default="",
+            AllowedPattern="^(Z[A-Z0-9]+|)$",
             Description="Route 53 hosted zone ID (e.g. ZZ148QEXAMPLE8V)",
         )
     )
