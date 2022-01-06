@@ -67,22 +67,58 @@
         };
         deployScript = pkgs.writeShellApplication {
           name = "vaultwarden-deploy";
-          runtimeInputs = with pkgs; [ awscli coreutils jq skopeo ];
+          runtimeInputs = with pkgs; [ awscli coreutils jq skopeo util-linux ];
           text = ''
-            IMAGETMP="$(mktemp -d --suffix ".$(basename "$0")")"
-            trap 'rm -rf -- "$IMAGETMP"' EXIT
-
-            STACK_NAME="vaultwarden-test-3"
+            PROGRAM="$(basename "$0")"
+            if ! PARSED_ARGS="$(getopt --name "$PROGRAM" \
+              --longoptions stack-name:,availability-zones: -- "" "$@")"; then
+                exit 1
+            fi
+            eval set -- "$PARSED_ARGS"
+            declare -a PARAMETER_OVERRIDES
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --stack-name)
+                      shift
+                      STACK_NAME="$1"
+                      ;;
+                    --availability-zones)
+                      shift
+                      PARAMETER_OVERRIDES+=("AvailabilityZones=$1")
+                      ;;
+                    --domain-name)
+                      shift
+                      PARAMETER_OVERRIDES+=("DomainName=$1")
+                      ;;
+                    --hosted-zone-id)
+                      shift
+                      PARAMETER_OVERRIDES+=("HostedZoneId=$1")
+                      ;;
+                esac
+                shift
+            done
+            if [ -z "''${STACK_NAME:-}" ]; then
+              echo "$PROGRAM: --stack-name is a required argument"
+              exit 1
+            fi
 
             STACK_EXISTS="$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
               --query "Stacks[] | length(@)" --output text || echo 0)"
             if [ "$STACK_EXISTS" -eq 0 ]; then
               >&2 echo "Deploying CloudFormation stack to bootstrap image repository"
+              # shellcheck disable=SC2016
+              ALL_AVAILABILITY_ZONES="$(aws ec2 describe-availability-zones --filters \
+                Name=opt-in-status,Values=opted-in,opt-in-not-required \
+                Name=zone-type,Values=availability-zone \
+                --query 'AvailabilityZones[].ZoneName | sort(@) | join(`,`, @)' --output text)"
               aws cloudformation deploy --stack-name "$STACK_NAME" \
-                --template-file ${cloudformationTemplate} --parameter-overrides "$@"
+                --template-file ${cloudformationTemplate} \
+                --parameter-overrides "AvailabilityZones=$ALL_AVAILABILITY_ZONES"
             fi
 
             >&2 echo "Uploading container image"
+            IMAGETMP="$(mktemp -d --suffix ".$PROGRAM")"
+            trap 'rm -rf -- "$IMAGETMP"' EXIT
             ECR_REPOSITORY="$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
               --query "Stacks[0].Outputs[?OutputKey == 'FunctionImageRepositoryUri'].OutputValue" --output text)"
             ECR_PASSWORD="$(aws ecr get-login-password)"
@@ -94,7 +130,7 @@
             >&2 echo "Updating CloudFormation stack"
             aws cloudformation deploy \
               --stack-name "$STACK_NAME" --template-file ${cloudformationTemplate} --capabilities CAPABILITY_IAM \
-              --parameter-overrides "ImageDigest=$IMAGE_DIGEST" "$@"
+              --parameter-overrides "ImageDigest=$IMAGE_DIGEST" "''${PARAMETER_OVERRIDES[@]}"
           '';
         };
       in rec { defaultPackage = deployScript; });
