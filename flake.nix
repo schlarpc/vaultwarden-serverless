@@ -71,8 +71,8 @@
           text = ''
             PROGRAM="$(basename "$0")"
             if ! PARSED_ARGS="$(getopt --name "$PROGRAM" \
-              --longoptions stack-name:,availability-zones: -- "" "$@")"; then
-                exit 1
+              --longoptions stack-name:,availability-zones:,domain-name:,hosted-zone-id: -- "" "$@")"; then
+              exit 1
             fi
             eval set -- "$PARSED_ARGS"
             declare -a PARAMETER_OVERRIDES
