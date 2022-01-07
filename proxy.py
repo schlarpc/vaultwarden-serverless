@@ -89,24 +89,6 @@ def convert_apigw_headers_to_httpx(event):
 
 def handler(event, _context=None):
     start_vaultwarden_server().wait()  # TODO timeout
-    print(
-        dict(
-            method=event["httpMethod"],
-            url=urllib.parse.urlunsplit(
-                (
-                    "http",
-                    "127.0.0.1:8000",
-                    event["path"],
-                    None,
-                    None,
-                )
-            ),
-            params=event["multiValueQueryStringParameters"],
-            headers=convert_apigw_headers_to_httpx(event),
-            content=convert_apigw_body_to_httpx(event),
-            allow_redirects=False,
-        )
-    )
     response = httpx.request(
         method=event["httpMethod"],
         url=urllib.parse.urlunsplit(
