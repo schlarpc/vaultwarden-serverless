@@ -51,7 +51,7 @@ from troposphere.awslambda import (
     VPCConfig,
 )
 from troposphere.certificatemanager import Certificate, DomainValidationOption
-from troposphere.ec2 import VPC, SecurityGroup, Subnet
+from troposphere.ec2 import VPC, SecurityGroup, SecurityGroupEgress, Subnet
 from troposphere.ecr import EncryptionConfiguration, Repository
 from troposphere.efs import (
     AccessPoint,
@@ -190,6 +190,7 @@ def create_template():
             "FunctionSecurityGroup",
             GroupDescription=StackName,
             VpcId=Ref(vpc),
+            SecurityGroupEgress=[{"CidrIp": "127.0.0.1/32", "IpProtocol": "-1"}],
         )
     )
 
@@ -206,6 +207,18 @@ def create_template():
                     "ToPort": "2049",
                 }
             ],
+            SecurityGroupEgress=[{"CidrIp": "127.0.0.1/32", "IpProtocol": "-1"}],
+        )
+    )
+
+    function_security_group_egress = template.add_resource(
+        SecurityGroupEgress(
+            "FunctionSecurityGroupEgress",
+            GroupId=Ref(function_security_group),
+            DestinationSecurityGroupId=Ref(mount_target_security_group),
+            IpProtocol="tcp",
+            FromPort="2049",
+            ToPort="2049",
         )
     )
 
@@ -368,6 +381,7 @@ def create_template():
                 ),
             ),
             Timeout=28,
+            DependsOn=[function_security_group_egress],
         ),
     )
 
