@@ -1,8 +1,9 @@
 import itertools
 
-from awacs import ec2, logs, sts
+from awacs import ec2, elasticfilesystem, logs, sts
 from awacs.aws import (
     Allow,
+    Bool,
     Condition,
     PolicyDocument,
     Principal,
@@ -55,9 +56,11 @@ from troposphere.ecr import EncryptionConfiguration, Repository
 from troposphere.efs import (
     AccessPoint,
     BackupPolicy,
+    CreationInfo,
     FileSystem,
     MountTarget,
     PosixUser,
+    RootDirectory,
 )
 from troposphere.iam import Policy, PolicyType, Role
 from troposphere.logs import LogGroup
@@ -173,11 +176,92 @@ def create_template():
         )
         subnets.append(subnet)
 
+    function_role = template.add_resource(
+        Role(
+            "FunctionRole",
+            AssumeRolePolicyDocument=PolicyDocument(
+                Version="2012-10-17",
+                Statement=[
+                    Statement(
+                        Effect=Allow,
+                        Action=[sts.AssumeRole],
+                        Principal=Principal("Service", "lambda.amazonaws.com"),
+                    ),
+                ],
+            ),
+            Policies=[
+                Policy(
+                    PolicyName="vpc-access",
+                    PolicyDocument=PolicyDocument(
+                        Version="2012-10-17",
+                        Statement=[
+                            Statement(
+                                Effect=Allow,
+                                Action=[
+                                    ec2.DescribeNetworkInterfaces,
+                                ],
+                                Resource=["*"],
+                            ),
+                            Statement(
+                                Effect=Allow,
+                                Action=[
+                                    ec2.CreateNetworkInterface,
+                                    ec2.DeleteNetworkInterface,
+                                    ec2.AssignPrivateIpAddresses,
+                                    ec2.UnassignPrivateIpAddresses,
+                                ],
+                                Resource=["*"],
+                                Condition=Condition(
+                                    StringEqualsIfExists(
+                                        "ec2:Vpc",
+                                        Join(
+                                            ":",
+                                            [
+                                                "arn",
+                                                Partition,
+                                                "ec2",
+                                                Region,
+                                                AccountId,
+                                                Join("/", ["vpc", Ref(vpc)]),
+                                            ],
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ],
+        )
+    )
+
     file_system = template.add_resource(
         FileSystem(
             "FileSystem",
             Encrypted=True,
             BackupPolicy=BackupPolicy(Status="ENABLED"),
+            FileSystemPolicy=PolicyDocument(
+                Version="2012-10-17",
+                Statement=[
+                    Statement(
+                        Effect=Allow,
+                        Action=[
+                            elasticfilesystem.ClientMount,
+                            elasticfilesystem.ClientWrite,
+                        ],
+                        Principal=Principal("AWS", GetAtt(function_role, "Arn")),
+                        Condition=Condition(
+                            [
+                                Bool(
+                                    {
+                                        "aws:SecureTransport": True,
+                                    }
+                                )
+                            ]
+                        ),
+                    )
+                ],
+            ).JSONrepr(),
         )
     )
 
@@ -238,68 +322,17 @@ def create_template():
             "FileSystemAccessPoint",
             FileSystemId=Ref(file_system),
             PosixUser=PosixUser(
-                Uid=str(0),
-                Gid=str(0),
+                Uid="1000",
+                Gid="1000",
             ),
-        )
-    )
-
-    function_role = template.add_resource(
-        Role(
-            "FunctionRole",
-            AssumeRolePolicyDocument=PolicyDocument(
-                Version="2012-10-17",
-                Statement=[
-                    Statement(
-                        Effect=Allow,
-                        Action=[sts.AssumeRole],
-                        Principal=Principal("Service", "lambda.amazonaws.com"),
-                    ),
-                ],
-            ),
-            Policies=[
-                Policy(
-                    PolicyName="vpc-access",
-                    PolicyDocument=PolicyDocument(
-                        Version="2012-10-17",
-                        Statement=[
-                            Statement(
-                                Effect=Allow,
-                                Action=[
-                                    ec2.DescribeNetworkInterfaces,
-                                ],
-                                Resource=["*"],
-                            ),
-                            Statement(
-                                Effect=Allow,
-                                Action=[
-                                    ec2.CreateNetworkInterface,
-                                    ec2.DeleteNetworkInterface,
-                                    ec2.AssignPrivateIpAddresses,
-                                    ec2.UnassignPrivateIpAddresses,
-                                ],
-                                Resource=["*"],
-                                Condition=Condition(
-                                    StringEqualsIfExists(
-                                        "ec2:Vpc",
-                                        Join(
-                                            ":",
-                                            [
-                                                "arn",
-                                                Partition,
-                                                "ec2",
-                                                Region,
-                                                AccountId,
-                                                Join("/", ["vpc", Ref(vpc)]),
-                                            ],
-                                        ),
-                                    ),
-                                ),
-                            ),
-                        ],
-                    ),
+            RootDirectory=RootDirectory(
+                Path="/data",
+                CreationInfo=CreationInfo(
+                    OwnerUid="1000",
+                    OwnerGid="1000",
+                    Permissions="0755",
                 ),
-            ],
+            ),
         )
     )
 
