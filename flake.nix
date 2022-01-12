@@ -146,9 +146,15 @@
             IMAGE_DIGEST="$(skopeo inspect "dir:$IMAGETMP/image" | jq -r .Digest)"
 
             >&2 echo "Updating CloudFormation stack"
-            aws cloudformation deploy \
-              --stack-name "$STACK_NAME" --template-file ${cloudformationTemplate} --capabilities CAPABILITY_IAM \
+            aws cloudformation deploy --stack-name "$STACK_NAME" \
+              --template-file ${cloudformationTemplate} \
+              --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset \
               --parameter-overrides "ImageDigest=$IMAGE_DIGEST" "''${PARAMETER_OVERRIDES[@]}"
+
+            ENDPOINT="$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+              --query "Stacks[0].Outputs[?OutputKey == 'Endpoint'].OutputValue" --output text)"
+            >&2 echo
+            >&2 echo "Deployment complete, vaultwarden is available at $ENDPOINT"
           '';
         };
       in rec { defaultPackage = deployScript; });
