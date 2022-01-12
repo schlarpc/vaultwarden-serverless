@@ -12,7 +12,6 @@ from awacs.aws import (
 from troposphere import (
     AccountId,
     And,
-    AWSHelperFn,
     Cidr,
     Condition as ConditionFn,
     Equals,
@@ -67,7 +66,7 @@ from troposphere.route53 import AliasTarget, RecordSetType
 MAX_AVAILABILITY_ZONES = 8
 
 
-class ListChecker(AWSHelperFn):
+class ListChecker:
     def __init__(self, template, name, items, *, delimiter=",", default_value=""):
         self._template = template
         self._name = name
@@ -81,14 +80,11 @@ class ListChecker(AWSHelperFn):
         exploded = Split(self._delimiter, joined)
         return Select(index, exploded)
 
-    def _add_existence_condition(self, index):
+    def exists(self, index) -> str:
         condition_name = f"{self._name}ListIdx{index}Exists"
         return self._template.add_condition(
             condition_name, Not(Equals(self._extract_value(index), self._default_value))
         )
-
-    def exists(self, index) -> str:
-        return self._add_existence_condition(index)
 
 
 def create_inline_dependency(passthrough_data, dependencies):
