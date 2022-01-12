@@ -103,7 +103,7 @@ def handler(event, _context=None):
         params=event["multiValueQueryStringParameters"],
         headers=convert_apigw_headers_to_httpx(event),
         content=convert_apigw_body_to_httpx(event),
-        allow_redirects=False,
+        follow_redirects=False,
     )
     # TODO allow larger responses by only b64ing when necessary?
     return {

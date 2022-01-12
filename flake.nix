@@ -27,25 +27,37 @@
               --set ROCKET_ADDRESS 127.0.0.1
           '';
         };
-        buildPython = pkgs.python3.withPackages (ps:
+        buildPython = (pkgs.python3.override {
+          packageOverrides = self: super: {
+            cfn-flip = super.cfn-flip.overridePythonAttrs (old: rec {
+              version = "7e01327ca30bd6a62ecc6d9679415875e0f180af";
+              src = pkgs.fetchFromGitHub {
+                repo = "aws-cfn-template-flip";
+                owner = "awslabs";
+                rev = version;
+                hash = "sha256-yEiTn8TJR9/4bK0s2Xr9Pg5ZcEnkWLert7x2LLy2T8k=";
+              };
+            });
+          };
+        }).withPackages (ps:
           with ps;
           pkgs.lib.attrValues rec {
             awacs = (buildPythonPackage rec {
               pname = "awacs";
-              version = "2.0.2";
+              version = "2.1.0";
               src = fetchPypi {
                 inherit pname version;
                 sha256 =
-                  "018138c10f82e11734aee7f9e7fff5dbfe1245ddaf15d5927f60f3b16e01ad7e";
+                  "efb84344791cd4efbb802107df7854a750284c9efc6c4c86e23d319a534f00a5";
               };
             });
             troposphere = (buildPythonPackage rec {
               pname = "troposphere";
-              version = "3.1.1";
+              version = "3.2.2";
               src = fetchPypi {
                 inherit pname version;
                 sha256 =
-                  "68313c119c3e5ad457d2a41f7396baadd54551f221268ab97d44134f15bdb2f3";
+                  "9d07338ed882928db9de9795beb8ee553e9618db20d782237ee4e4f52dfb52b2";
               };
               propagatedBuildInputs = [ cfn-flip awacs ];
               doCheck = false; # tests not distributed on pypi
