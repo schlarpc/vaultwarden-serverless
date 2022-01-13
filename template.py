@@ -148,8 +148,22 @@ def create_template():
             Default="",
             Description=" ".join(
                 (
-                    "Container image digest automatically provided by deployment script,",
-                    "do not modify",
+                    "Container image digest",
+                    "(provided by deployment script, do not modify)",
+                )
+            ),
+        )
+    )
+
+    image_architecture = template.add_parameter(
+        Parameter(
+            "ImageArchitecture",
+            Type="String",
+            AllowedValues=["x86_64", "arm64"],
+            Description=" ".join(
+                (
+                    "Container image architecture",
+                    "(provided by deployment script, do not modify)",
                 )
             ),
         )
@@ -551,6 +565,7 @@ def create_template():
                     ],
                 ),
             ),
+            Architectures=["x86_64"],
             Timeout=28,
             DependsOn=[function_security_group_egress],
         ),

@@ -13,15 +13,16 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        runtimePkgs = nixpkgs.legacyPackages.x86_64-linux;
         repoSource = pkgs.nix-gitignore.gitignoreSource [ ] ./.;
-        vaultwarden = pkgs.stdenv.mkDerivation {
+        vaultwarden = runtimePkgs.stdenv.mkDerivation {
           name = "vaultwarden-wrapped";
           phases = [ "installPhase" ];
-          nativeBuildInputs = [ pkgs.makeWrapper ];
+          nativeBuildInputs = [ runtimePkgs.makeWrapper ];
           installPhase = ''
             mkdir -p $out/bin
-            makeWrapper ${pkgs.vaultwarden}/bin/vaultwarden $out/bin/vaultwarden \
-              --set WEB_VAULT_FOLDER "${pkgs.vaultwarden-vault}/share/vaultwarden/vault" \
+            makeWrapper ${runtimePkgs.vaultwarden}/bin/vaultwarden $out/bin/vaultwarden \
+              --set WEB_VAULT_FOLDER "${runtimePkgs.vaultwarden-vault}/share/vaultwarden/vault" \
               --set ENABLE_DB_WAL false \
               --set DISABLE_ICON_DOWNLOAD true \
               --set ROCKET_ADDRESS 127.0.0.1
@@ -67,8 +68,8 @@
           pkgs.runCommand "vaultwarden-cloudformation-template" { } ''
             ${buildPython}/bin/python ${repoSource}/template.py > $out
           '';
-        runtimePython =
-          pkgs.python3.withPackages (ps: with ps; [ awslambdaric httpx ]);
+        runtimePython = runtimePkgs.python3.withPackages
+          (ps: with ps; [ awslambdaric httpx ]);
         proxySource = pkgs.lib.sourceByRegex repoSource [ "proxy\\.py" ];
         containerImage = pkgs.dockerTools.streamLayeredImage {
           name = "vaultwarden-container-image";
@@ -83,6 +84,10 @@
               [ "PYTHONPATH=${proxySource}" "PATH=${vaultwarden}/bin:$PATH" ];
           };
         };
+        runtimeArchitecture = ({
+          aarch64-linux = "arm64";
+          x86_64-linux = "x86_64";
+        })."${runtimePkgs.system}";
         deployScript = pkgs.writeShellApplication {
           name = "vaultwarden-deploy";
           runtimeInputs = with pkgs; [ awscli coreutils jq skopeo util-linux ];
@@ -131,7 +136,9 @@
                 --query 'AvailabilityZones[].ZoneName | sort(@) | join(`,`, @)' --output text)"
               aws cloudformation deploy --stack-name "$STACK_NAME" \
                 --template-file ${cloudformationTemplate} \
-                --parameter-overrides "AvailabilityZones=$ALL_AVAILABILITY_ZONES"
+                --parameter-overrides \
+                "AvailabilityZones=$ALL_AVAILABILITY_ZONES" \
+                "ImageArchitecture=${runtimeArchitecture}"
             fi
 
             >&2 echo "Uploading container image"
@@ -149,7 +156,10 @@
             aws cloudformation deploy --stack-name "$STACK_NAME" \
               --template-file ${cloudformationTemplate} \
               --capabilities CAPABILITY_IAM --no-fail-on-empty-changeset \
-              --parameter-overrides "ImageDigest=$IMAGE_DIGEST" "''${PARAMETER_OVERRIDES[@]}"
+              --parameter-overrides \
+              "ImageDigest=$IMAGE_DIGEST" \
+              "ImageArchitecture=${runtimeArchitecture}" \
+              "''${PARAMETER_OVERRIDES[@]}"
 
             ENDPOINT="$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
               --query "Stacks[0].Outputs[?OutputKey == 'Endpoint'].OutputValue" --output text)"
