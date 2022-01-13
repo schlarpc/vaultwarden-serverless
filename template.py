@@ -762,4 +762,4 @@ def create_template():
 
 
 if __name__ == "__main__":
-    print(create_template().to_json(indent=None))
+    print(create_template().to_json(indent=None, separators=(",", ":")))
