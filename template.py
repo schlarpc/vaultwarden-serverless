@@ -65,6 +65,7 @@ from troposphere.efs import (
 from troposphere.iam import Policy, PolicyType, Role
 from troposphere.logs import LogGroup
 from troposphere.route53 import AliasTarget, RecordSetType
+from troposphere.transfer import PosixProfile, Server, User
 
 MAX_AVAILABILITY_ZONES = 8
 
@@ -110,6 +111,7 @@ def create_template():
             "DomainName",
             Type="String",
             Default="",
+            Description="Custom domain name (optional, must also provide HostedZoneId)",
         )
     )
 
@@ -123,11 +125,33 @@ def create_template():
         )
     )
 
+    sftp_public_key = template.add_parameter(
+        Parameter(
+            "SftpPublicKey",
+            Type="String",
+            Default="",
+            AllowedPattern="^(ssh-rsa .+|)$",
+            Description=" ".join(
+                (
+                    "SSH public key (id_rsa.pub) used to provision an SFTP endpoint.",
+                    "Can be used to directly interact with vaultwarden's data storage.",
+                    "(optional, fixed cost of $0.30/hour)",
+                )
+            ),
+        )
+    )
+
     image_digest = template.add_parameter(
         Parameter(
             "ImageDigest",
             Type="String",
             Default="",
+            Description=" ".join(
+                (
+                    "Container image digest automatically provided by deployment script,",
+                    "do not modify",
+                )
+            ),
         )
     )
 
@@ -141,6 +165,11 @@ def create_template():
             Not(Equals(Ref(domain_name), "")),
             Not(Equals(Ref(hosted_zone_id), "")),
         ),
+    )
+
+    have_sftp_public_key = template.add_condition(
+        "HaveSftpPublicKey",
+        Not(Equals(Ref(sftp_public_key), "")),
     )
 
     have_image_digest = template.add_condition(
@@ -235,6 +264,23 @@ def create_template():
         )
     )
 
+    transfer_user_role = template.add_resource(
+        Role(
+            "FileSystemTransferUserRole",
+            AssumeRolePolicyDocument=PolicyDocument(
+                Version="2012-10-17",
+                Statement=[
+                    Statement(
+                        Effect=Allow,
+                        Action=[sts.AssumeRole],
+                        Principal=Principal("Service", "transfer.amazonaws.com"),
+                    ),
+                ],
+            ),
+            Condition=have_sftp_public_key,
+        )
+    )
+
     file_system = template.add_resource(
         FileSystem(
             "FileSystem",
@@ -249,7 +295,17 @@ def create_template():
                             elasticfilesystem.ClientMount,
                             elasticfilesystem.ClientWrite,
                         ],
-                        Principal=Principal("AWS", GetAtt(function_role, "Arn")),
+                        Principal=Principal(
+                            "AWS",
+                            [
+                                GetAtt(function_role, "Arn"),
+                                If(
+                                    have_sftp_public_key,
+                                    GetAtt(transfer_user_role, "Arn"),
+                                    NoValue,
+                                ),
+                            ],
+                        ),
                         Condition=Condition(
                             [
                                 Bool(
@@ -259,9 +315,17 @@ def create_template():
                                 )
                             ]
                         ),
-                    )
+                    ),
+                    Statement(
+                        Effect=Allow,
+                        Action=[
+                            elasticfilesystem.Backup,
+                        ],
+                        Principal=Principal("AWS", AccountId),
+                    ),
                 ],
             ).JSONrepr(),
+            FileSystemTags=Tags(Name=StackName),
         )
     )
 
@@ -333,6 +397,84 @@ def create_template():
                     Permissions="0755",
                 ),
             ),
+        )
+    )
+
+    transfer_server_role = template.add_resource(
+        Role(
+            "FileSystemTransferServerRole",
+            AssumeRolePolicyDocument=PolicyDocument(
+                Version="2012-10-17",
+                Statement=[
+                    Statement(
+                        Effect=Allow,
+                        Action=[sts.AssumeRole],
+                        Principal=Principal("Service", "transfer.amazonaws.com"),
+                    ),
+                ],
+            ),
+            Condition=have_sftp_public_key,
+        )
+    )
+
+    transfer_server = template.add_resource(
+        Server(
+            "FileSystemTransferServer",
+            Domain="EFS",
+            EndpointType="PUBLIC",
+            IdentityProviderType="SERVICE_MANAGED",
+            LoggingRole=GetAtt(transfer_server_role, "Arn"),
+            Protocols=["SFTP"],
+            Tags=Tags(Name=StackName),
+            Condition=have_sftp_public_key,
+        )
+    )
+
+    transfer_server_log_group = template.add_resource(
+        LogGroup(
+            "FileSystemTransferServerLogGroup",
+            LogGroupName=Join(
+                "/", ["/aws/transfer", GetAtt(transfer_server, "ServerId")]
+            ),
+            RetentionInDays=30,
+            Condition=have_sftp_public_key,
+        )
+    )
+
+    transfer_server_log_group_policy = template.add_resource(
+        PolicyType(
+            "FileSystemTransferServerLogGroupPolicy",
+            PolicyName="cloudwatch-logging",
+            PolicyDocument=PolicyDocument(
+                Version="2012-10-17",
+                Statement=[
+                    Statement(
+                        Effect=Allow,
+                        Resource=GetAtt(transfer_server_log_group, "Arn"),
+                        Action=[logs.CreateLogStream, logs.PutLogEvents],
+                    ),
+                ],
+            ),
+            Roles=[Ref(transfer_server_role)],
+            Condition=have_sftp_public_key,
+        )
+    )
+
+    transfer_user = template.add_resource(
+        User(
+            "FileSystemTransferUser",
+            HomeDirectory=Join("", ["/", Ref(file_system)]),
+            HomeDirectoryType="PATH",
+            PosixProfile=PosixProfile(
+                Uid=1000,
+                Gid=1000,
+            ),
+            Role=GetAtt(transfer_user_role, "Arn"),
+            ServerId=GetAtt(transfer_server, "ServerId"),
+            SshPublicKeys=[Ref(sftp_public_key)],
+            UserName="vaultwarden",
+            DependsOn=[transfer_server_log_group_policy],
+            Condition=have_sftp_public_key,
         )
     )
 
@@ -567,6 +709,29 @@ def create_template():
         Output(
             "Endpoint",
             Value=endpoint,
+        )
+    )
+
+    output_sftp_endpoint = template.add_output(
+        Output(
+            "SftpEndpoint",
+            Value=Join(
+                "@",
+                [
+                    GetAtt(transfer_user, "UserName"),
+                    Join(
+                        ".",
+                        [
+                            GetAtt(transfer_server, "ServerId"),
+                            "server",
+                            "transfer",
+                            Region,
+                            URLSuffix,
+                        ],
+                    ),
+                ],
+            ),
+            Condition=have_sftp_public_key,
         )
     )
 

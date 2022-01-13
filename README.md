@@ -74,8 +74,10 @@ SQLite's write-ahead logging mode is disabled due to its incompatibility with
 network filesystems.
 
 Automatic backup is enabled in Elastic File System, which will store daily
-backups with a 35-day retention period to the AWS Backup service. There is no
-included support in this project for interacting with or restoring these backups.
+backups with a 35-day retention period to the AWS Backup service. Restoring
+from one of these backups is a fairly manual process, but specifying the
+`SftpPublicKey` stack parameter will help you out by provisioning an SFTP
+endpoint for the filesystem.
 
 ### Web server (API Gateway)
 
