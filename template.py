@@ -1,6 +1,7 @@
 import itertools
+import json
 
-from awacs import ec2, elasticfilesystem, logs, sts
+from awacs import ec2, ecr, elasticfilesystem, logs, states, sts
 from awacs.aws import (
     Allow,
     Bool,
@@ -52,7 +53,7 @@ from troposphere.awslambda import (
 )
 from troposphere.certificatemanager import Certificate, DomainValidationOption
 from troposphere.ec2 import VPC, SecurityGroup, SecurityGroupEgress, Subnet
-from troposphere.ecr import EncryptionConfiguration, Repository
+from troposphere.ecr import EncryptionConfiguration, LifecyclePolicy, Repository
 from troposphere.efs import (
     AccessPoint,
     BackupPolicy,
@@ -62,9 +63,11 @@ from troposphere.efs import (
     PosixUser,
     RootDirectory,
 )
+from troposphere.events import Rule, Target
 from troposphere.iam import Policy, PolicyType, Role
 from troposphere.logs import LogGroup
 from troposphere.route53 import AliasTarget, RecordSetType
+from troposphere.stepfunctions import StateMachine
 from troposphere.transfer import PosixProfile, Server, User
 
 MAX_AVAILABILITY_ZONES = 8
@@ -519,6 +522,28 @@ def create_template():
             EncryptionConfiguration=EncryptionConfiguration(
                 EncryptionType="KMS",
             ),
+            LifecyclePolicy=LifecyclePolicy(
+                LifecyclePolicyText=json.dumps(
+                    {
+                        "rules": [
+                            {
+                                "rulePriority": 1,
+                                "selection": {
+                                    "tagStatus": "untagged",
+                                    "countType": "imageCountMoreThan",
+                                    "countNumber": 1,
+                                },
+                                "action": {
+                                    "type": "expire",
+                                },
+                            }
+                        ]
+                    },
+                    indent=None,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            ),
         )
     )
 
@@ -565,10 +590,130 @@ def create_template():
                     ],
                 ),
             ),
-            Architectures=["x86_64"],
+            Architectures=[Ref(image_architecture)],
             Timeout=28,
             DependsOn=[function_security_group_egress],
         ),
+    )
+
+    function_image_tagger_role = template.add_resource(
+        Role(
+            "FunctionImageTaggerRole",
+            AssumeRolePolicyDocument=PolicyDocument(
+                Version="2012-10-17",
+                Statement=[
+                    Statement(
+                        Effect=Allow,
+                        Action=[sts.AssumeRole],
+                        Principal=Principal("Service", "states.amazonaws.com"),
+                    ),
+                ],
+            ),
+            Policies=[
+                Policy(
+                    PolicyName="ecr-tagging",
+                    PolicyDocument=PolicyDocument(
+                        Version="2012-10-17",
+                        Statement=[
+                            Statement(
+                                Effect=Allow,
+                                Action=[ecr.BatchGetImage, ecr.PutImage],
+                                Resource=[GetAtt(function_image_repository, "Arn")],
+                            ),
+                        ],
+                    ),
+                )
+            ],
+        )
+    )
+
+    function_image_tagger = template.add_resource(
+        StateMachine(
+            "FunctionImageTagger",
+            RoleArn=GetAtt(function_image_tagger_role, "Arn"),
+            StateMachineType="EXPRESS",
+            Definition={
+                "StartAt": "GetImageManifest",
+                "States": {
+                    "GetImageManifest": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::aws-sdk:ecr:batchGetImage",
+                        "Parameters": {
+                            "ImageIds": [{"ImageDigest": Ref(image_digest)}],
+                            "RepositoryName": Ref(function_image_repository),
+                        },
+                        "ResultPath": "$",
+                        "ResultSelector": {
+                            "ImageManifest.$": "$.Images[0].ImageManifest"
+                        },
+                        "Next": "PutImageTag",
+                    },
+                    "PutImageTag": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::aws-sdk:ecr:putImage",
+                        "Parameters": {
+                            "ImageManifest.$": "$.ImageManifest",
+                            "RepositoryName": Ref(function_image_repository),
+                            "ImageTag": "cloudformation-current",
+                        },
+                        "Catch": [
+                            {
+                                "ErrorEquals": ["Ecr.ImageAlreadyExistsException"],
+                                "Next": "Pass",
+                            }
+                        ],
+                        "End": True,
+                    },
+                    "Pass": {"Type": "Pass", "End": True},
+                },
+            },
+            DependsOn=[function],
+        )
+    )
+
+    function_image_tagger_rule_role = template.add_resource(
+        Role(
+            "FunctionImageTaggerRuleRole",
+            AssumeRolePolicyDocument=PolicyDocument(
+                Version="2012-10-17",
+                Statement=[
+                    Statement(
+                        Effect=Allow,
+                        Action=[sts.AssumeRole],
+                        Principal=Principal("Service", "events.amazonaws.com"),
+                    ),
+                ],
+            ),
+            Policies=[
+                Policy(
+                    PolicyName="state-machine-start",
+                    PolicyDocument=PolicyDocument(
+                        Version="2012-10-17",
+                        Statement=[
+                            Statement(
+                                Effect=Allow,
+                                Action=[states.StartExecution],
+                                Resource=[GetAtt(function_image_tagger, "Arn")],
+                            ),
+                        ],
+                    ),
+                )
+            ],
+        )
+    )
+
+    function_image_tagger_rule = template.add_resource(
+        Rule(
+            "FunctionImageTaggerRule",
+            ScheduleExpression="rate(1 hour)",
+            Targets=[
+                Target(
+                    Id="state-machine",
+                    Arn=Ref(function_image_tagger),
+                    RoleArn=GetAtt(function_image_tagger_rule_role, "Arn"),
+                )
+            ],
+        )
     )
 
     function_log_group = template.add_resource(
